@@ -4,7 +4,7 @@ from datetime import datetime, timedelta
 from dotenv import load_dotenv
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ContextTypes, ConversationHandler
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, and_
 from sqlalchemy.orm import sessionmaker
 from models import Base, Station, User, Appointment
 
@@ -101,6 +101,39 @@ async def choose_station(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.edit_message_text("Выберите дату:", reply_markup=reply_markup)
     return CHOOSE_DATE
 
+def is_time_slot_available(db_session, station_id: int, appointment_time: datetime) -> bool:
+    """Проверяет, доступно ли время для записи на станцию"""
+    # Получаем количество слотов в час для станции
+    station = db_session.query(Station).filter(Station.id == station_id).first()
+    if not station:
+        return False
+    
+    # Проверяем существующие записи на конкретное время
+    existing_appointments = db_session.query(Appointment).filter(
+        and_(
+            Appointment.station_id == station_id,
+            Appointment.appointment_time == appointment_time
+        )
+    ).count()
+    
+    # Если есть хотя бы одна запись на это конкретное время, считаем слот занятым
+    if existing_appointments > 0:
+        return False
+    
+    # Проверяем количество записей в текущий час
+    start_time = appointment_time.replace(minute=0, second=0, microsecond=0)
+    end_time = start_time + timedelta(hours=1)
+    
+    hour_appointments = db_session.query(Appointment).filter(
+        and_(
+            Appointment.station_id == station_id,
+            Appointment.appointment_time >= start_time,
+            Appointment.appointment_time < end_time
+        )
+    ).count()
+    
+    return hour_appointments < station.slots_per_hour
+
 async def choose_date(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -108,28 +141,80 @@ async def choose_date(update: Update, context: ContextTypes.DEFAULT_TYPE):
     selected_date = query.data.split('_')[1]
     context.user_data['date'] = selected_date
     
+    db = SessionLocal()
+    station_id = context.user_data['station_id']
+    
     # Генерируем доступное время с 9:00 до 18:00
     times = []
-    for hour in range(9, 18):
-        times.append(f"{hour:02d}:00")
-        times.append(f"{hour:02d}:30")
+    selected_date_obj = datetime.strptime(selected_date, "%Y-%m-%d")
+    current_time = datetime.now()
     
-    keyboard = [[InlineKeyboardButton(time, callback_data=f'time_{time}')] 
-                for time in times]
+    for hour in range(9, 18):
+        for minute in [0, 30]:
+            time_str = f"{hour:02d}:{minute:02d}"
+            check_time = selected_date_obj.replace(hour=hour, minute=minute)
+            
+            # Пропускаем прошедшее время
+            if check_time < current_time:
+                times.append((time_str, False))
+                continue
+            
+            if is_time_slot_available(db, station_id, check_time):
+                times.append((time_str, True))
+            else:
+                times.append((time_str, False))
+    
+    # Создаем клавиатуру с временными слотами
+    keyboard = []
+    for time_str, is_available in times:
+        if is_available:
+            keyboard.append([InlineKeyboardButton(time_str, callback_data=f'time_{time_str}')])
+        else:
+            keyboard.append([InlineKeyboardButton(f"❌ {time_str} (занято)", callback_data='unavailable')])
+    
+    # Добавляем кнопку "Назад"
+    keyboard.append([InlineKeyboardButton("⬅️ Назад к выбору даты", callback_data='back_to_date')])
     
     reply_markup = InlineKeyboardMarkup(keyboard)
-    await query.edit_message_text("Выберите время:", reply_markup=reply_markup)
+    await query.edit_message_text("Выберите время (недоступное время помечено ❌):", reply_markup=reply_markup)
+    return CHOOSE_TIME
+
+async def handle_unavailable_time(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer("Это время уже занято. Пожалуйста, выберите другое время.", show_alert=True)
     return CHOOSE_TIME
 
 async def save_appointment(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     
+    if query.data == 'unavailable':
+        await query.answer("Это время уже занято. Пожалуйста, выберите другое время.", show_alert=True)
+        return CHOOSE_TIME
+    
+    if query.data == 'back_to_date':
+        return await choose_station(update, context)
+    
     selected_time = query.data.split('_')[1]
     date_str = context.user_data['date']
     time_obj = datetime.strptime(f"{date_str} {selected_time}", "%Y-%m-%d %H:%M")
     
+    # Проверяем, не прошло ли выбранное время
+    if time_obj < datetime.now():
+        await query.edit_message_text(
+            "Извините, но это время уже прошло. Пожалуйста, начните запись заново и выберите другое время.",
+        )
+        return ConversationHandler.END
+    
     db = SessionLocal()
+    
+    # Проверяем доступность времени еще раз перед сохранением
+    if not is_time_slot_available(db, context.user_data['station_id'], time_obj):
+        await query.edit_message_text(
+            "Извините, но это время уже занято. Пожалуйста, начните запись заново и выберите другое время.",
+        )
+        return ConversationHandler.END
+    
     user = db.query(User).filter(User.telegram_id == update.effective_user.id).first()
     
     new_appointment = Appointment(
@@ -141,8 +226,15 @@ async def save_appointment(update: Update, context: ContextTypes.DEFAULT_TYPE):
         appointment_time=time_obj
     )
     
-    db.add(new_appointment)
-    db.commit()
+    try:
+        db.add(new_appointment)
+        db.commit()
+    except Exception as e:
+        db.rollback()
+        await query.edit_message_text(
+            "Произошла ошибка при сохранении записи. Пожалуйста, попробуйте еще раз.",
+        )
+        return ConversationHandler.END
     
     station = db.query(Station).filter(Station.id == context.user_data['station_id']).first()
     
@@ -192,7 +284,10 @@ def main():
             ENTER_PHONE: [MessageHandler(filters.TEXT & ~filters.COMMAND, enter_phone)],
             CHOOSE_STATION: [CallbackQueryHandler(choose_station, pattern='^station_')],
             CHOOSE_DATE: [CallbackQueryHandler(choose_date, pattern='^date_')],
-            CHOOSE_TIME: [CallbackQueryHandler(save_appointment, pattern='^time_')]
+            CHOOSE_TIME: [
+                CallbackQueryHandler(save_appointment, pattern='^time_'),
+                CallbackQueryHandler(handle_unavailable_time, pattern='^unavailable$')
+            ]
         },
         fallbacks=[]
     )
