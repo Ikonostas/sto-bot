@@ -1,6 +1,6 @@
 from datetime import datetime, timedelta
 from sqlalchemy import and_
-from database.models import Appointment
+from database.models import Appointment, Station
 from config import WORKING_HOURS_START, WORKING_HOURS_END, SLOT_DURATION, DAYS_AHEAD
 
 def get_available_dates():
