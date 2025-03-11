@@ -20,6 +20,9 @@ class User(Base):
     id = Column(Integer, primary_key=True)
     telegram_id = Column(Integer, unique=True)
     username = Column(String)
+    full_name = Column(String)
+    company_name = Column(String)
+    is_registered = Column(Boolean, default=False)
     is_manager = Column(Boolean, default=False)
     appointments = relationship("Appointment", back_populates="user")
 
