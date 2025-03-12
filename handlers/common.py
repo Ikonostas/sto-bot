@@ -10,17 +10,23 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     db = SessionLocal()
     try:
         user = update.effective_user
+        logging.info(f"Запуск функции start для пользователя {user.id}")
         
         # Проверяем, существует ли пользователь
         db_user = db.query(User).filter(User.telegram_id == user.id).first()
+        logging.info(f"Найден пользователь в БД: {db_user is not None}")
+        
         if not db_user:
+            logging.info("Создаем нового пользователя")
             db_user = User(telegram_id=user.id, username=user.username)
             db.add(db_user)
             db.commit()
         
+        logging.info(f"Статус регистрации пользователя: {db_user.is_registered}")
         if not db_user.is_registered:
             message = ("Добро пожаловать! Для использования бота необходимо зарегистрироваться.\n"
                       "Используйте команду /register для начала регистрации.")
+            logging.info("Отправляем сообщение о необходимости регистрации")
             if update.callback_query:
                 await update.callback_query.message.edit_text(message)
             else:
@@ -40,6 +46,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply_markup = InlineKeyboardMarkup(keyboard)
         message = f"Здравствуйте, {db_user.full_name}! Выберите действие:"
         
+        logging.info("Отправляем главное меню")
         if update.callback_query:
             await update.callback_query.message.edit_text(message, reply_markup=reply_markup)
         else:
