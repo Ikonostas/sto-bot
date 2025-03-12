@@ -37,11 +37,13 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data.clear()
         
         keyboard = [
-            [InlineKeyboardButton("Записать на ТО", callback_data='new_appointment')],
-            [InlineKeyboardButton("Мои записи", callback_data='my_appointments')]
+            [InlineKeyboardButton("🚗 Записать на ТО (кат. B)", callback_data='new_appointment_B')],
+            [InlineKeyboardButton("🚛 Записать на ТО (кат. C)", callback_data='new_appointment_C')],
+            [InlineKeyboardButton("🚌 Записать на ТО (кат. D)", callback_data='new_appointment_D')],
+            [InlineKeyboardButton("📋 Мои записи", callback_data='my_appointments')]
         ]
         if db_user.is_manager:
-            keyboard.append([InlineKeyboardButton("Управление записями", callback_data='manage_appointments')])
+            keyboard.append([InlineKeyboardButton("⚙️ Управление записями", callback_data='manage_appointments')])
         
         reply_markup = InlineKeyboardMarkup(keyboard)
         message = f"Здравствуйте, {db_user.full_name}! Выберите действие:"

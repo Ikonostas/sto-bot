@@ -24,6 +24,7 @@ class Station(Base):
     name = Column(String, nullable=False)
     address = Column(String)
     slots_per_hour = Column(Integer, default=2)
+    category = Column(String, nullable=False, default='B')  # Категория станции (B, C, D)
     
     appointments = relationship("Appointment", back_populates="station")
 
