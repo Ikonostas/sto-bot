@@ -5,7 +5,7 @@ from telegram.ext import (Application, CommandHandler, CallbackQueryHandler,
                          MessageHandler, filters, ConversationHandler, ContextTypes)
 
 # Импорт конфигурации
-from config import BOT_TOKEN, CHOOSING, REGISTRATION_FULLNAME, REGISTRATION_COMPANY, REGISTRATION_CODE
+from config import BOT_TOKEN, CHOOSING, REGISTRATION_FULLNAME, REGISTRATION_COMPANY, REGISTRATION_CODE_STATE
 from config import ENTER_CLIENT_NAME, ENTER_CAR_NUMBER, ENTER_PHONE, CHOOSE_STATION, CHOOSE_DATE, CHOOSE_TIME
 
 # Импорт обработчиков
@@ -38,7 +38,7 @@ def main():
         states={
             REGISTRATION_FULLNAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, registration_fullname)],
             REGISTRATION_COMPANY: [MessageHandler(filters.TEXT & ~filters.COMMAND, registration_company)],
-            REGISTRATION_CODE: [MessageHandler(filters.TEXT & ~filters.COMMAND, registration_code)],
+            REGISTRATION_CODE_STATE: [MessageHandler(filters.TEXT & ~filters.COMMAND, registration_code)],
         },
         fallbacks=[CommandHandler('start', start)],
         allow_reentry=True

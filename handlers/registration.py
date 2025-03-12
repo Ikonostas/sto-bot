@@ -1,7 +1,7 @@
 import logging
 from telegram import Update
 from telegram.ext import ContextTypes, ConversationHandler
-from config import REGISTRATION_CODE, REGISTRATION_FULLNAME, REGISTRATION_COMPANY
+from config import REGISTRATION_CODE, REGISTRATION_FULLNAME, REGISTRATION_COMPANY, REGISTRATION_CODE_STATE
 from database.db import SessionLocal
 from database.models import User
 
@@ -12,7 +12,12 @@ async def register(update: Update, context: ContextTypes.DEFAULT_TYPE):
         user = update.effective_user
         db_user = db.query(User).filter(User.telegram_id == user.id).first()
         
-        if db_user and db_user.is_registered:
+        # Если пользователя нет, создаем его
+        if not db_user:
+            db_user = User(telegram_id=user.id, username=user.username)
+            db.add(db_user)
+            db.commit()
+        elif db_user.is_registered:
             await update.message.reply_text(
                 f"Вы уже зарегистрированы как {db_user.full_name} из компании {db_user.company_name}."
             )
@@ -62,9 +67,10 @@ async def registration_company(update: Update, context: ContextTypes.DEFAULT_TYP
             
         context.user_data['company_name'] = update.message.text.strip()
         await update.message.reply_text(
-            "Для завершения регистрации введите кодовое слово:"
+            "Для завершения регистрации введите кодовое слово.\n"
+            "Важно: введите слово в точности как указано, с учетом регистра букв."
         )
-        return REGISTRATION_CODE
+        return REGISTRATION_CODE_STATE
     except Exception as e:
         logging.error(f"Ошибка в registration_company: {e}")
         await update.message.reply_text(
@@ -76,11 +82,16 @@ async def registration_code(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Проверка кодового слова и завершение регистрации"""
     db = SessionLocal()
     try:
-        if update.message.text != REGISTRATION_CODE:
+        # Убираем пробелы, но сохраняем регистр
+        entered_code = update.message.text.strip()
+        logging.info(f"Проверка кодового слова. Введено: '{entered_code}', Ожидается: '{REGISTRATION_CODE}'")
+        
+        if entered_code != REGISTRATION_CODE:
+            logging.warning(f"Неверное кодовое слово от пользователя {update.effective_user.id}. Введено: '{entered_code}'")
             await update.message.reply_text(
-                "Неверное кодовое слово. Попробуйте еще раз:"
+                "Неверное кодовое слово. Убедитесь, что вы вводите слово точно как указано, с учетом регистра. Попробуйте еще раз:"
             )
-            return REGISTRATION_CODE
+            return REGISTRATION_CODE_STATE
         
         if 'full_name' not in context.user_data or 'company_name' not in context.user_data:
             raise ValueError("Отсутствуют необходимые данные для регистрации")
