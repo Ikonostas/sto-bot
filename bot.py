@@ -4,6 +4,13 @@ from telegram import Update
 from telegram.ext import (Application, CommandHandler, CallbackQueryHandler, 
                          MessageHandler, filters, ConversationHandler, ContextTypes)
 
+# Настройка логирования
+logging.basicConfig(
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    level=logging.DEBUG  # Изменено с INFO на DEBUG
+)
+logger = logging.getLogger(__name__)
+
 # Импорт конфигурации
 from config import BOT_TOKEN, CHOOSING, REGISTRATION_FULLNAME, REGISTRATION_COMPANY, REGISTRATION_CODE_STATE
 from config import ENTER_CLIENT_NAME, ENTER_CAR_NUMBER, ENTER_PHONE, CHOOSE_STATION, CHOOSE_DATE, CHOOSE_TIME
@@ -15,12 +22,6 @@ from handlers.appointments import (new_appointment, enter_client_name, enter_car
                                 choose_station, choose_date, handle_unavailable_time, save_appointment,
                                 my_appointments)
 from handlers.manager import manage_appointments, cancel_appointment
-
-# Настройка логирования
-logging.basicConfig(
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    level=logging.INFO
-)
 
 def main():
     """Основная функция запуска бота"""
@@ -49,7 +50,7 @@ def main():
         entry_points=[CommandHandler('start', start)],
         states={
             CHOOSING: [
-                CallbackQueryHandler(new_appointment, pattern='^new_appointment$'),
+                CallbackQueryHandler(new_appointment, pattern='^new_appointment_[BCD]$'),
                 CallbackQueryHandler(my_appointments, pattern='^my_appointments$'),
                 CallbackQueryHandler(manage_appointments, pattern='^manage_appointments$'),
                 CallbackQueryHandler(cancel_appointment, pattern='^cancel_\\d+$'),
@@ -58,8 +59,14 @@ def main():
             ENTER_CLIENT_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, enter_client_name)],
             ENTER_CAR_NUMBER: [MessageHandler(filters.TEXT & ~filters.COMMAND, enter_car_number)],
             ENTER_PHONE: [MessageHandler(filters.TEXT & ~filters.COMMAND, enter_phone)],
-            CHOOSE_STATION: [CallbackQueryHandler(choose_station, pattern='^station_')],
-            CHOOSE_DATE: [CallbackQueryHandler(choose_date, pattern='^date_')],
+            CHOOSE_STATION: [
+                CallbackQueryHandler(choose_station, pattern='^station_\\d+$'),
+                CallbackQueryHandler(back_to_menu, pattern='^back_to_menu$')
+            ],
+            CHOOSE_DATE: [
+                CallbackQueryHandler(choose_date, pattern='^date_'),
+                CallbackQueryHandler(back_to_menu, pattern='^back_to_menu$')
+            ],
             CHOOSE_TIME: [
                 CallbackQueryHandler(save_appointment, pattern='^time_'),
                 CallbackQueryHandler(handle_unavailable_time, pattern='^unavailable$'),

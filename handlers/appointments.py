@@ -13,23 +13,40 @@ async def new_appointment(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     
+    # Получаем выбранную категорию из callback_data
+    category = query.data.split('_')[-1]  # Получаем B, C или D
+    context.user_data['vehicle_category'] = category
+    logging.info(f"Выбрана категория ТС: {category}")
+    
     db = SessionLocal()
     try:
         user = db.query(User).filter(User.telegram_id == update.effective_user.id).first()
+        logging.info(f"Поиск пользователя: {user is not None}")
+        
         if not user:
+            logging.error("Пользователь не найден")
             await query.edit_message_text(
                 "Ошибка: пользователь не найден. Пожалуйста, начните с команды /start"
             )
             return ConversationHandler.END
         
+        logging.info(f"Статус регистрации пользователя: {user.is_registered}")
         if not user.is_registered:
+            logging.warning("Пользователь не зарегистрирован")
             await query.edit_message_text(
                 "Для создания записи необходимо зарегистрироваться.\n"
                 "Отправьте команду /start для начала регистрации."
             )
             return ConversationHandler.END
         
-        await query.edit_message_text("Введите имя клиента:")
+        logging.info("Отправляем запрос на ввод имени клиента")
+        keyboard = [[InlineKeyboardButton("В главное меню", callback_data='back_to_menu')]]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        await query.edit_message_text(
+            f"Введите имя клиента (для ТС категории {category}):",
+            reply_markup=reply_markup
+        )
+        logging.info(f"Возвращаем состояние ENTER_CLIENT_NAME: {ENTER_CLIENT_NAME}")
         return ENTER_CLIENT_NAME
     except Exception as e:
         logging.error(f"Ошибка в new_appointment: {e}")
@@ -41,13 +58,27 @@ async def new_appointment(update: Update, context: ContextTypes.DEFAULT_TYPE):
         db.close()
 
 async def enter_client_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    logging.info("Вход в функцию enter_client_name")
+    logging.info(f"Полученный текст: {update.message.text}")
     context.user_data['client_name'] = update.message.text
-    await update.message.reply_text("Введите номер автомобиля:")
+    keyboard = [[InlineKeyboardButton("В главное меню", callback_data='back_to_menu')]]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    logging.info("Отправляем запрос на ввод номера автомобиля")
+    await update.message.reply_text(
+        "Введите номер автомобиля:",
+        reply_markup=reply_markup
+    )
+    logging.info(f"Возвращаем состояние ENTER_CAR_NUMBER: {ENTER_CAR_NUMBER}")
     return ENTER_CAR_NUMBER
 
 async def enter_car_number(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data['car_number'] = update.message.text
-    await update.message.reply_text("Введите номер телефона клиента:")
+    keyboard = [[InlineKeyboardButton("В главное меню", callback_data='back_to_menu')]]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    await update.message.reply_text(
+        "Введите номер телефона клиента:",
+        reply_markup=reply_markup
+    )
     return ENTER_PHONE
 
 async def enter_phone(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -55,21 +86,41 @@ async def enter_phone(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     db = SessionLocal()
     try:
-        stations = db.query(Station).all()
-        if not stations:
+        # Получаем станции только для выбранной категории
+        category = context.user_data.get('vehicle_category')
+        if not category:
             await update.message.reply_text(
-                "В системе нет доступных станций. Пожалуйста, обратитесь к администратору.",
+                "Ошибка: не выбрана категория ТС. Пожалуйста, начните запись заново.",
                 reply_markup=InlineKeyboardMarkup([[
                     InlineKeyboardButton("В главное меню", callback_data='back_to_menu')
                 ]])
             )
             return CHOOSING
         
-        keyboard = [[InlineKeyboardButton(station.name, callback_data=f'station_{station.id}')] 
-                    for station in stations]
+        stations = db.query(Station).filter(Station.category == category).all()
+        if not stations:
+            await update.message.reply_text(
+                f"В системе нет доступных станций для категории {category}. Пожалуйста, обратитесь к администратору.",
+                reply_markup=InlineKeyboardMarkup([[
+                    InlineKeyboardButton("В главное меню", callback_data='back_to_menu')
+                ]])
+            )
+            return CHOOSING
         
+        keyboard = []
+        for station in stations:
+            keyboard.append([InlineKeyboardButton(
+                f"{station.name} ({station.address})", 
+                callback_data=f'station_{station.id}'
+            )])
+        
+        keyboard.append([InlineKeyboardButton("В главное меню", callback_data='back_to_menu')])
         reply_markup = InlineKeyboardMarkup(keyboard)
-        await update.message.reply_text("Выберите станцию ТО:", reply_markup=reply_markup)
+        
+        await update.message.reply_text(
+            f"Выберите станцию ТО для категории {category}:",
+            reply_markup=reply_markup
+        )
         return CHOOSE_STATION
     except Exception as e:
         logging.error(f"Ошибка в enter_phone: {e}")
@@ -87,6 +138,7 @@ async def choose_station(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     
+    # Получаем ID выбранной станции
     station_id = int(query.data.split('_')[1])
     context.user_data['station_id'] = station_id
     
