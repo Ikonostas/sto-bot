@@ -38,23 +38,25 @@ STO/
 
 1. Клонируйте репозиторий:
 ```bash
-git clone <repository-url>
-cd STO
+git clone https://github.com/Ikonostas/sto-bot.git
+cd sto-bot
 ```
 
-2. Установите зависимости:
+2. Создайте файл с переменными окружения:
 ```bash
-pip install -r requirements.txt
+cp .env.example .env
 ```
 
-3. Создайте файл `.env` и добавьте в него токен бота:
-```
-BOT_TOKEN=your_bot_token_here
-```
+3. Отредактируйте файл `.env`, указав необходимые значения:
+- BOT_TOKEN - токен вашего Telegram бота
+- DATABASE_URL - URL для подключения к базе данных
+- LOG_LEVEL - уровень логирования
+- ADMIN_IDS - список ID администраторов бота
 
-4. Запустите бота:
+4. Запустите приложение:
 ```bash
-python bot.py
+chmod +x deploy.sh
+./deploy.sh
 ```
 
 ## Команды бота
@@ -64,6 +66,8 @@ python bot.py
 
 ## Требования
 
+- Docker и Docker Compose
+- Git
 - Python 3.8+
 - python-telegram-bot==20.7
 - SQLAlchemy==2.0.23
@@ -72,20 +76,21 @@ python bot.py
 
 ## Разработка
 
-1. Создайте новую ветку для разработки:
+1. Создайте виртуальное окружение:
 ```bash
-git checkout -b feature/your-feature-name
+python -m venv venv
+source venv/bin/activate  # для Linux/Mac
+venv\Scripts\activate     # для Windows
 ```
 
-2. Внесите изменения и создайте коммит:
+2. Установите зависимости:
 ```bash
-git add .
-git commit -m "feat: add your feature"
+pip install -r requirements.txt
 ```
 
-3. Отправьте изменения в репозиторий:
+3. Запустите тесты:
 ```bash
-git push origin feature/your-feature-name
+python -m pytest tests/ -v
 ```
 
 ## База данных
@@ -169,36 +174,25 @@ git push origin feature/your-feature-name
 
 1. Клонируйте репозиторий:
 ```bash
-git clone https://github.com/your-username/sto-bot.git
+git clone https://github.com/Ikonostas/sto-bot.git
 cd sto-bot
 ```
 
-2. Создайте виртуальное окружение и активируйте его:
+2. Создайте файл с переменными окружения:
 ```bash
-python -m venv venv
-source venv/bin/activate  # для Linux/Mac
-venv\Scripts\activate     # для Windows
+cp .env.example .env
 ```
 
-3. Установите зависимости:
-```bash
-python -m pip install -r requirements.txt
-```
+3. Отредактируйте файл `.env`, указав необходимые значения:
+- BOT_TOKEN - токен вашего Telegram бота
+- DATABASE_URL - URL для подключения к базе данных
+- LOG_LEVEL - уровень логирования
+- ADMIN_IDS - список ID администраторов бота
 
-4. Создайте файл `.env` на основе `.env.example`:
+4. Запустите приложение:
 ```bash
-cp .env.example .env  # для Linux/Mac
-copy .env.example .env  # для Windows
-```
-
-5. Отредактируйте файл `.env` и добавьте ваш токен бота:
-```
-BOT_TOKEN=your_bot_token_here
-```
-
-6. Инициализируйте базу данных и добавьте станции ТО:
-```bash
-python init_stations.py
+chmod +x deploy.sh
+./deploy.sh
 ```
 
 ## Запуск
@@ -278,7 +272,7 @@ pip install -r requirements.txt
 
 2. Запустите тесты:
 ```bash
-pytest tests/
+python -m pytest tests/ -v
 ```
 
 ### Структура тестов
@@ -300,3 +294,7 @@ tests/
 
 ## Версия
 Обновлена версия до 1.2.0 
+
+## Лицензия
+
+MIT 
