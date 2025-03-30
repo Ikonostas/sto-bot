@@ -1,131 +1,144 @@
-import logging
-from telegram import Update
-from telegram.ext import ContextTypes, ConversationHandler
-from config import REGISTRATION_CODE, REGISTRATION_FULLNAME, REGISTRATION_COMPANY, REGISTRATION_CODE_STATE
-from database.db import SessionLocal
-from database.models import User
+from telegram import Update, ReplyKeyboardMarkup, KeyboardButton, ReplyKeyboardRemove
+from telegram.ext import ContextTypes, ConversationHandler, CommandHandler, MessageHandler, filters
+from utils.logger import logger
+from database.database import get_db
+from handlers.user_handler import create_agent, get_agent_by_telegram_id
 
-async def register(update: Update, context: ContextTypes.DEFAULT_TYPE):
+# Константы для состояний разговора
+FULL_NAME, PHONE, COMPANY, CODE_WORD = range(4)
+
+async def register_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Начало процесса регистрации"""
-    db = SessionLocal()
+    user_id = update.effective_user.id
+    logger.info(f"User {user_id} started registration process")
+    
+    # Проверяем, не зарегистрирован ли пользователь уже
+    db = next(get_db())
     try:
-        user = update.effective_user
-        db_user = db.query(User).filter(User.telegram_id == user.id).first()
-        
-        # Если пользователя нет, создаем его
-        if not db_user:
-            db_user = User(telegram_id=user.id, username=user.username)
-            db.add(db_user)
-            db.commit()
-        elif db_user.is_registered:
+        agent = get_agent_by_telegram_id(db, user_id)
+        if agent:
             await update.message.reply_text(
-                f"Вы уже зарегистрированы как {db_user.full_name} из компании {db_user.company_name}."
+                "Вы уже зарегистрированы. Используйте /start для доступа к главному меню."
             )
             return ConversationHandler.END
+    finally:
+        db.close()
+    
+    # Начинаем процесс регистрации
+    await update.message.reply_text(
+        "Добро пожаловать в процесс регистрации!\n\n"
+        "Пожалуйста, введите ваше полное имя (ФИО):"
+    )
+    
+    return FULL_NAME
+
+async def full_name_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обработчик ввода ФИО"""
+    full_name = update.message.text
+    context.user_data["full_name"] = full_name
+    logger.debug(f"User {update.effective_user.id} entered full name: {full_name}")
+    
+    # Запрашиваем номер телефона
+    keyboard = [[KeyboardButton("Поделиться номером", request_contact=True)]]
+    reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True, one_time_keyboard=True)
+    
+    await update.message.reply_text(
+        "Спасибо! Теперь введите ваш номер телефона или нажмите кнопку 'Поделиться номером':",
+        reply_markup=reply_markup
+    )
+    
+    return PHONE
+
+async def phone_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обработчик ввода номера телефона"""
+    user_id = update.effective_user.id
+    
+    if update.message.contact:
+        phone = update.message.contact.phone_number
+    else:
+        phone = update.message.text
+    
+    context.user_data["phone"] = phone
+    logger.debug(f"User {user_id} entered phone: {phone}")
+    
+    # Запрашиваем компанию
+    await update.message.reply_text(
+        "Отлично! В какой компании вы работаете?",
+        reply_markup=ReplyKeyboardRemove()
+    )
+    
+    return COMPANY
+
+async def company_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обработчик ввода названия компании"""
+    company = update.message.text
+    context.user_data["company"] = company
+    logger.debug(f"User {update.effective_user.id} entered company: {company}")
+    
+    # Запрашиваем кодовое слово
+    await update.message.reply_text(
+        "Осталось немного! Пожалуйста, введите кодовое слово для завершения регистрации:"
+    )
+    
+    return CODE_WORD
+
+async def code_word_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обработчик ввода кодового слова и завершение регистрации"""
+    user_id = update.effective_user.id
+    code_word = update.message.text
+    logger.debug(f"User {user_id} entered code word")
+    
+    # Создаем нового агента
+    db = next(get_db())
+    try:
+        success, message = create_agent(
+            db=db,
+            telegram_id=user_id,
+            full_name=context.user_data.get("full_name", ""),
+            phone=context.user_data.get("phone", ""),
+            company=context.user_data.get("company", ""),
+            code_word=code_word
+        )
         
-        await update.message.reply_text(
-            "Начинаем регистрацию.\n"
-            "Пожалуйста, введите ваше ФИО:"
-        )
-        return REGISTRATION_FULLNAME
-    except Exception as e:
-        logging.error(f"Ошибка в register: {e}")
-        await update.message.reply_text(
-            "Произошла ошибка при начале регистрации. Пожалуйста, попробуйте позже."
-        )
-        return ConversationHandler.END
+        if success:
+            await update.message.reply_text(
+                f"{message}\n\nТеперь вы можете использовать /start для доступа к меню бота."
+            )
+            # Очищаем данные пользователя
+            context.user_data.clear()
+            return ConversationHandler.END
+        else:
+            await update.message.reply_text(
+                f"{message}\n\nПожалуйста, попробуйте еще раз ввести кодовое слово:"
+            )
+            return CODE_WORD
     finally:
         db.close()
 
-async def registration_fullname(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обработка ввода ФИО"""
-    try:
-        if not update.message.text or len(update.message.text.strip()) < 3:
-            await update.message.reply_text(
-                "ФИО должно содержать не менее 3 символов. Пожалуйста, введите корректное ФИО:"
-            )
-            return REGISTRATION_FULLNAME
-            
-        context.user_data['full_name'] = update.message.text.strip()
-        await update.message.reply_text("Введите название вашей компании:")
-        return REGISTRATION_COMPANY
-    except Exception as e:
-        logging.error(f"Ошибка в registration_fullname: {e}")
-        await update.message.reply_text(
-            "Произошла ошибка при сохранении ФИО. Пожалуйста, попробуйте позже или используйте /start"
-        )
-        return ConversationHandler.END
+async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Отмена процесса регистрации"""
+    logger.info(f"User {update.effective_user.id} cancelled registration")
+    
+    await update.message.reply_text(
+        "Регистрация отменена. Вы можете начать снова с помощью команды /register."
+    )
+    
+    # Очищаем данные пользователя
+    context.user_data.clear()
+    return ConversationHandler.END
 
-async def registration_company(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обработка ввода названия компании"""
-    try:
-        if not update.message.text or len(update.message.text.strip()) < 2:
-            await update.message.reply_text(
-                "Название компании должно содержать не менее 2 символов. Пожалуйста, введите корректное название:"
-            )
-            return REGISTRATION_COMPANY
-            
-        context.user_data['company_name'] = update.message.text.strip()
-        await update.message.reply_text(
-            "Для завершения регистрации введите кодовое слово.\n"
-            "Важно: введите слово в точности как указано, с учетом регистра букв."
-        )
-        return REGISTRATION_CODE_STATE
-    except Exception as e:
-        logging.error(f"Ошибка в registration_company: {e}")
-        await update.message.reply_text(
-            "Произошла ошибка при сохранении названия компании. Пожалуйста, попробуйте позже или используйте /start"
-        )
-        return ConversationHandler.END
-
-async def registration_code(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Проверка кодового слова и завершение регистрации"""
-    db = SessionLocal()
-    try:
-        # Убираем пробелы, но сохраняем регистр
-        entered_code = update.message.text.strip()
-        logging.info(f"Проверка кодового слова. Введено: '{entered_code}', Ожидается: '{REGISTRATION_CODE}'")
-        
-        if entered_code != REGISTRATION_CODE:
-            logging.warning(f"Неверное кодовое слово от пользователя {update.effective_user.id}. Введено: '{entered_code}'")
-            await update.message.reply_text(
-                "Неверное кодовое слово. Убедитесь, что вы вводите слово точно как указано, с учетом регистра. Попробуйте еще раз:"
-            )
-            return REGISTRATION_CODE_STATE
-        
-        if 'full_name' not in context.user_data or 'company_name' not in context.user_data:
-            raise ValueError("Отсутствуют необходимые данные для регистрации")
-        
-        user = db.query(User).filter(User.telegram_id == update.effective_user.id).first()
-        if not user:
-            raise ValueError("Пользователь не найден")
-            
-        user.full_name = context.user_data['full_name']
-        user.company_name = context.user_data['company_name']
-        user.is_registered = True
-        db.commit()
-        
-        await update.message.reply_text(
-            f"Регистрация успешно завершена!\n"
-            f"ФИО: {user.full_name}\n"
-            f"Компания: {user.company_name}"
-        )
-        
-        # Показываем главное меню
-        from handlers.common import start
-        return await start(update, context)
-        
-    except ValueError as e:
-        logging.error(f"Ошибка валидации в registration_code: {e}")
-        await update.message.reply_text(
-            f"Ошибка при регистрации: {str(e)}. Пожалуйста, начните регистрацию заново с помощью /register"
-        )
-        return ConversationHandler.END
-    except Exception as e:
-        logging.error(f"Ошибка в registration_code: {e}")
-        await update.message.reply_text(
-            "Произошла ошибка при завершении регистрации. Пожалуйста, попробуйте позже или используйте /start"
-        )
-        return ConversationHandler.END
-    finally:
-        db.close() 
+def get_registration_handler():
+    """Создание обработчика разговора для регистрации"""
+    return ConversationHandler(
+        entry_points=[CommandHandler("register", register_start)],
+        states={
+            FULL_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, full_name_handler)],
+            PHONE: [
+                MessageHandler(filters.CONTACT, phone_handler),
+                MessageHandler(filters.TEXT & ~filters.COMMAND, phone_handler)
+            ],
+            COMPANY: [MessageHandler(filters.TEXT & ~filters.COMMAND, company_handler)],
+            CODE_WORD: [MessageHandler(filters.TEXT & ~filters.COMMAND, code_word_handler)]
+        },
+        fallbacks=[CommandHandler("cancel", cancel)]
+    ) 

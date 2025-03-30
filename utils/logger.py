@@ -1,34 +1,28 @@
-import logging
 import sys
+from loguru import logger
 from pathlib import Path
 from config import settings
 
 # Создаем директорию для логов если её нет
-log_dir = Path("logs")
-log_dir.mkdir(exist_ok=True)
+log_path = Path(settings.LOG_FILE)
+log_path.parent.mkdir(parents=True, exist_ok=True)
 
-# Настраиваем логгер
-logger = logging.getLogger("sto_bot")
-logger.setLevel(settings.LOG_LEVEL)
+# Настраиваем логирование
+logger.remove()  # Удаляем стандартный обработчик
 
-# Форматтер для логов
-formatter = logging.Formatter(
-    '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+# Добавляем обработчик для консоли
+logger.add(
+    sys.stderr,
+    format="<green>{time:YYYY-MM-DD HH:mm:ss}</green> | <level>{level: <8}</level> | <cyan>{name}</cyan>:<cyan>{function}</cyan>:<cyan>{line}</cyan> - <level>{message}</level>",
+    level=settings.LOG_LEVEL
 )
 
-# Хендлер для файла
-file_handler = logging.FileHandler(
-    log_dir / "bot.log",
-    encoding='utf-8'
-)
-file_handler.setFormatter(formatter)
-logger.addHandler(file_handler)
-
-# Хендлер для консоли
-console_handler = logging.StreamHandler(sys.stdout)
-console_handler.setFormatter(formatter)
-logger.addHandler(console_handler)
-
-def get_logger():
-    """Получить настроенный логгер"""
-    return logger 
+# Добавляем обработчик для файла
+logger.add(
+    settings.LOG_FILE,
+    rotation="300 MB",
+    retention="10 days",
+    compression="zip",
+    format="{time:YYYY-MM-DD HH:mm:ss} | {level: <8} | {name}:{function}:{line} - {message}",
+    level="INFO"
+) 

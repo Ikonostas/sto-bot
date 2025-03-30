@@ -1,66 +1,43 @@
 from pydantic_settings import BaseSettings
-from typing import List
-import os
-from dotenv import load_dotenv
+from typing import List, Dict
+from pydantic import BaseModel
+import json
 
-# Загрузка переменных окружения
-load_dotenv()
+class STOSettings(BaseModel):
+    name: str
+    address: str
+    categories: List[str]
+    prices: Dict[str, float]
+    working_hours: Dict[str, str]
+    time_slot: int  # в минутах
+    defect_prices: Dict[str, float]
 
 class Settings(BaseSettings):
-    # Telegram Bot
+    # Telegram settings
     BOT_TOKEN: str
-    
-    # Database
-    DATABASE_URL: str
-    
-    # Logging
-    LOG_LEVEL: str = "INFO"
-    
-    # Application
     ADMIN_IDS: List[int]
+    
+    # Database settings
+    DB_HOST: str
+    DB_PORT: int
+    DB_NAME: str
+    DB_USER: str
+    DB_PASSWORD: str
+    
+    # Registration settings
+    REGISTRATION_CODE: str
+    
+    # STO settings
+    STO_STATIONS: Dict[str, STOSettings]
+    
+    # Logging settings
+    LOG_LEVEL: str = "DEBUG"
+    LOG_FILE: str = "logs/bot.log"
     
     class Config:
         env_file = ".env"
-        
-    def validate(self):
-        """Проверка конфигурации"""
-        if not self.BOT_TOKEN:
-            raise ValueError("BOT_TOKEN не установлен")
-        if not self.DATABASE_URL:
-            raise ValueError("DATABASE_URL не установлен")
-        if not self.ADMIN_IDS:
-            raise ValueError("ADMIN_IDS не установлен")
+        env_file_encoding = "utf-8"
+        json_loads = json.loads
+        json_dumps = json.dumps
 
-# Создаем экземпляр конфигурации
-settings = Settings()
-settings.validate()
-
-# Настройки бота
-BOT_TOKEN = settings.BOT_TOKEN
-REGISTRATION_CODE = "admin"
-
-# Настройки базы данных
-DATABASE_URL = settings.DATABASE_URL
-
-# Настройки временных слотов
-WORKING_HOURS_START = 9  # Начало рабочего дня
-WORKING_HOURS_END = 18   # Конец рабочего дня
-SLOT_DURATION = 30       # Длительность слота в минутах
-DAYS_AHEAD = 7          # Количество дней для предварительной записи
-
-# Состояния разговора
-(CHOOSING, REGISTRATION_FULLNAME, REGISTRATION_COMPANY, REGISTRATION_CODE_STATE, 
- ENTER_CLIENT_NAME, ENTER_CAR_NUMBER, ENTER_PHONE, CHOOSE_STATION, 
- CHOOSE_DATE, CHOOSE_TIME) = range(10)
-
-# Константы для состояний
-CHOOSING = "CHOOSING"
-REGISTRATION_FULLNAME = "REGISTRATION_FULLNAME"
-REGISTRATION_COMPANY = "REGISTRATION_COMPANY"
-REGISTRATION_CODE = "REGISTRATION_CODE"
-REGISTRATION_CODE_STATE = "REGISTRATION_CODE_STATE"
-
-# Константы для сообщений
-REGISTRATION_CODE = "Введите код подтверждения:"
-REGISTRATION_COMPANY = "Введите название вашей компании:"
-REGISTRATION_FULLNAME = "Введите ваше ФИО:" 
+settings = Settings() 

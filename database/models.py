@@ -1,43 +1,61 @@
-from sqlalchemy import Column, Integer, String, Boolean, DateTime, ForeignKey
+from sqlalchemy import Column, Integer, String, Float, DateTime, ForeignKey, Enum, Text, Boolean
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import relationship
+from datetime import datetime
+import enum
 
 Base = declarative_base()
 
-class User(Base):
-    __tablename__ = 'users'
+class UserRole(enum.Enum):
+    AGENT = "agent"
+    ADMIN = "admin"
+
+class Agent(Base):
+    __tablename__ = "agents"
     
     id = Column(Integer, primary_key=True)
-    telegram_id = Column(Integer, unique=True, nullable=False)
-    username = Column(String)
+    telegram_id = Column(Integer, unique=True)
     full_name = Column(String)
-    company_name = Column(String)
-    is_registered = Column(Boolean, default=False)
-    is_manager = Column(Boolean, default=False)
+    phone = Column(String)
+    company = Column(String)
+    role = Column(Enum(UserRole), default=UserRole.AGENT)
+    commission_rate = Column(Float, default=0.0)
+    messenger_link = Column(String)
+    created_at = Column(DateTime, default=datetime.utcnow)
     
-    appointments = relationship("Appointment", back_populates="user")
+    to_cards = relationship("TOCard", back_populates="agent")
+    payments = relationship("Payment", back_populates="agent")
 
-class Station(Base):
-    __tablename__ = 'stations'
+class TOCard(Base):
+    __tablename__ = "to_cards"
     
     id = Column(Integer, primary_key=True)
-    name = Column(String, nullable=False)
-    address = Column(String)
-    slots_per_hour = Column(Integer, default=2)
-    category = Column(String, nullable=False, default='B')  # Категория станции (B, C, D)
+    card_number = Column(String, unique=True)
+    agent_id = Column(Integer, ForeignKey("agents.id"))
+    category = Column(String)  # B, C, E
+    sto_name = Column(String)
+    has_defects = Column(Boolean, default=False)
+    defect_type = Column(String, nullable=True)  # minor, major
+    defect_description = Column(Text, nullable=True)
+    appointment_time = Column(DateTime)
+    client_name = Column(String)
+    car_number = Column(String)
+    vin_number = Column(String)
+    client_phone = Column(String)
+    total_price = Column(Float)
+    status = Column(String, default="pending")  # pending, approved, rejected, cancelled
+    admin_comment = Column(Text, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
     
-    appointments = relationship("Appointment", back_populates="station")
+    agent = relationship("Agent", back_populates="to_cards")
 
-class Appointment(Base):
-    __tablename__ = 'appointments'
+class Payment(Base):
+    __tablename__ = "payments"
     
     id = Column(Integer, primary_key=True)
-    station_id = Column(Integer, ForeignKey('stations.id'), nullable=False)
-    user_id = Column(Integer, ForeignKey('users.id'), nullable=False)
-    client_name = Column(String, nullable=False)
-    car_number = Column(String, nullable=False)
-    client_phone = Column(String, nullable=False)
-    appointment_time = Column(DateTime, nullable=False)
+    agent_id = Column(Integer, ForeignKey("agents.id"))
+    amount = Column(Float)
+    comment = Column(Text)
+    created_at = Column(DateTime, default=datetime.utcnow)
     
-    station = relationship("Station", back_populates="appointments")
-    user = relationship("User", back_populates="appointments") 
+    agent = relationship("Agent", back_populates="payments") 
