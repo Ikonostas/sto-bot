@@ -25,6 +25,7 @@ class Agent(Base):
     
     to_cards = relationship("TOCard", back_populates="agent")
     payments = relationship("Payment", back_populates="agent")
+    calculations = relationship("Calculation", back_populates="agent")
 
 class TOCard(Base):
     __tablename__ = "to_cards"
@@ -58,4 +59,14 @@ class Payment(Base):
     comment = Column(Text)
     created_at = Column(DateTime, default=datetime.utcnow)
     
-    agent = relationship("Agent", back_populates="payments") 
+    agent = relationship("Agent", back_populates="payments")
+
+class Calculation(Base):
+    __tablename__ = "calculations"
+    
+    id = Column(Integer, primary_key=True)
+    agent_id = Column(Integer, ForeignKey("agents.id"))
+    amount = Column(Float)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    
+    agent = relationship("Agent", back_populates="calculations") 

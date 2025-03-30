@@ -425,8 +425,35 @@ async def vin_number_handler(update: Update, context: ContextTypes.DEFAULT_TYPE)
     
     return CLIENT_PHONE
 
-async def client_phone_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обработка ввода номера телефона клиента и формирование карточки ТО"""
+async def notify_admins_about_new_card(context: ContextTypes.DEFAULT_TYPE, card: TOCard, agent: Agent):
+    """Отправляет уведомление всем админам о новой карточке ТО"""
+    admin_ids = settings.ADMIN_IDS
+    
+    message = (
+        f"🆕 Новая карточка ТО №{card.card_number}\n\n"
+        f"👤 Агент: {agent.full_name}\n"
+        f"🚗 Категория: {card.category}\n"
+        f"🏢 СТО: {card.sto_name}\n"
+        f"📅 Время: {card.appointment_time.strftime('%d.%m.%Y %H:%M')}\n"
+        f"💰 Стоимость: {card.total_price} руб.\n\n"
+        f"Перейдите в раздел «Согласование» для обработки карточки."
+    )
+    
+    keyboard = [[InlineKeyboardButton("Перейти к согласованию", callback_data="admin_approve")]]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    
+    for admin_id in admin_ids:
+        try:
+            await context.bot.send_message(
+                chat_id=admin_id,
+                text=message,
+                reply_markup=reply_markup
+            )
+        except Exception as e:
+            logger.error(f"Failed to notify admin {admin_id}: {e}")
+
+async def process_client_phone(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обработка ввода номера телефона клиента и создание карточки ТО"""
     client_phone = update.message.text
     context.user_data["client_phone"] = client_phone
     
@@ -531,6 +558,9 @@ async def confirm_booking(update: Update, context: ContextTypes.DEFAULT_TYPE):
         db.add(to_card)
         db.commit()
         
+        # Отправляем уведомление админам
+        await notify_admins_about_new_card(context, to_card, agent)
+        
         logger.info(f"User {user_id} created TO card: {booking_number}")
         
         await query.edit_message_text(
@@ -625,7 +655,7 @@ def get_booking_handler():
                 MessageHandler(filters.TEXT & ~filters.COMMAND, vin_number_handler)
             ],
             CLIENT_PHONE: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, client_phone_handler)
+                MessageHandler(filters.TEXT & ~filters.COMMAND, process_client_phone)
             ],
             CONFIRM_BOOKING: [
                 CallbackQueryHandler(confirm_booking, pattern=r'^confirm_booking$'),

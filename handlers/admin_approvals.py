@@ -11,9 +11,11 @@ from utils.roles import admin_required
 from database.database import get_db
 from database.models import Agent, TOCard
 from datetime import datetime
+from sqlalchemy.orm import Session
 
 # Состояния для ConversationHandler
 APPROVE_REJECT, REJECT_REASON = range(2)
+WAITING_DECLINE_REASON = 3
 
 @admin_required
 async def show_pending_approvals(update: Update, context: ContextTypes.DEFAULT_TYPE, page: int = 0):
@@ -300,4 +302,185 @@ def get_approval_handler():
         },
         fallbacks=[],
         name="admin_approval_handler"
-    ) 
+    )
+
+async def show_approval_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Показывает список карточек ТО для согласования"""
+    query = update.callback_query
+    if query:
+        await query.answer()
+    
+    page = context.user_data.get('approval_page', 1)
+    per_page = 5
+    
+    with Session() as db:
+        cards = db.query(TOCard).filter(TOCard.status == 'pending').order_by(TOCard.created_at.desc()).all()
+        
+        if not cards:
+            message = "📭 Нет карточек ТО для согласования"
+            keyboard = [[InlineKeyboardButton("« Назад", callback_data="admin_menu")]]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            
+            if query:
+                await query.edit_message_text(text=message, reply_markup=reply_markup)
+            else:
+                await update.message.reply_text(text=message, reply_markup=reply_markup)
+            return
+        
+        total_pages = (len(cards) + per_page - 1) // per_page
+        start_idx = (page - 1) * per_page
+        end_idx = start_idx + per_page
+        current_cards = cards[start_idx:end_idx]
+        
+        keyboard = []
+        for card in current_cards:
+            agent = db.query(Agent).filter(Agent.id == card.agent_id).first()
+            card_text = f"ТО №{card.card_number} | {agent.full_name}"
+            keyboard.append([InlineKeyboardButton(card_text, callback_data=f"approve_card_{card.id}")])
+        
+        nav_buttons = []
+        if page > 1:
+            nav_buttons.append(InlineKeyboardButton("« Пред.", callback_data=f"approval_page_{page-1}"))
+        if page < total_pages:
+            nav_buttons.append(InlineKeyboardButton("След. »", callback_data=f"approval_page_{page+1}"))
+        if nav_buttons:
+            keyboard.append(nav_buttons)
+            
+        keyboard.append([InlineKeyboardButton("« Назад", callback_data="admin_menu")])
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        message = f"📋 Карточки ТО для согласования (стр. {page}/{total_pages}):"
+        
+        if query:
+            await query.edit_message_text(text=message, reply_markup=reply_markup)
+        else:
+            await update.message.reply_text(text=message, reply_markup=reply_markup)
+
+async def show_card_details(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Показывает детали карточки ТО и кнопки для согласования/отклонения"""
+    query = update.callback_query
+    await query.answer()
+    
+    card_id = int(query.data.split('_')[-1])
+    
+    with Session() as db:
+        card = db.query(TOCard).filter(TOCard.id == card_id).first()
+        agent = db.query(Agent).filter(Agent.id == card.agent_id).first()
+        
+        if not card:
+            await query.edit_message_text(
+                "❌ Карточка не найдена",
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("« Назад", callback_data="admin_approve")]])
+            )
+            return
+        
+        message = (
+            f"📄 Карточка ТО №{card.card_number}\n\n"
+            f"👤 Агент: {agent.full_name}\n"
+            f"📱 Телефон агента: {agent.phone}\n"
+            f"🏢 СТО: {card.sto_name}\n"
+            f"🚗 Категория ТС: {card.category}\n"
+            f"📅 Дата и время: {card.appointment_time.strftime('%d.%m.%Y %H:%M')}\n"
+            f"💰 Стоимость: {card.total_price} руб.\n"
+            f"📝 Комментарий: {card.comment or 'нет'}\n"
+        )
+        
+        keyboard = [
+            [
+                InlineKeyboardButton("✅ Согласовать", callback_data=f"confirm_card_{card_id}"),
+                InlineKeyboardButton("❌ Отклонить", callback_data=f"decline_card_{card_id}")
+            ],
+            [InlineKeyboardButton("« Назад", callback_data="admin_approve")]
+        ]
+        
+        await query.edit_message_text(text=message, reply_markup=InlineKeyboardMarkup(keyboard))
+
+async def confirm_card(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Согласование карточки ТО"""
+    query = update.callback_query
+    await query.answer()
+    
+    card_id = int(query.data.split('_')[-1])
+    
+    with Session() as db:
+        card = db.query(TOCard).filter(TOCard.id == card_id).first()
+        agent = db.query(Agent).filter(Agent.id == card.agent_id).first()
+        
+        if not card:
+            await query.edit_message_text("❌ Карточка не найдена")
+            return
+        
+        card.status = 'approved'
+        card.approved_at = datetime.now()
+        db.commit()
+        
+        # Уведомляем агента
+        try:
+            await context.bot.send_message(
+                chat_id=agent.telegram_id,
+                text=f"✅ Ваша карточка ТО №{card.card_number} была согласована администратором!"
+            )
+        except Exception as e:
+            logger.error(f"Failed to notify agent {agent.telegram_id}: {e}")
+        
+        await query.edit_message_text(
+            f"✅ Карточка ТО №{card.card_number} согласована",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("« К списку", callback_data="admin_approve")]])
+        )
+
+async def decline_card(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Отклонение карточки ТО"""
+    query = update.callback_query
+    await query.answer()
+    
+    card_id = int(query.data.split('_')[-1])
+    context.user_data['decline_card_id'] = card_id
+    
+    await query.edit_message_text(
+        "📝 Пожалуйста, укажите причину отклонения:",
+        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("« Отмена", callback_data="admin_approve")]])
+    )
+    return WAITING_DECLINE_REASON
+
+async def process_decline_reason(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обработка причины отклонения карточки ТО"""
+    reason = update.message.text
+    card_id = context.user_data.get('decline_card_id')
+    
+    with Session() as db:
+        card = db.query(TOCard).filter(TOCard.id == card_id).first()
+        agent = db.query(Agent).filter(Agent.id == card.agent_id).first()
+        
+        if not card:
+            await update.message.reply_text("❌ Карточка не найдена")
+            return ConversationHandler.END
+        
+        card.status = 'declined'
+        card.decline_reason = reason
+        db.commit()
+        
+        # Уведомляем агента
+        try:
+            await context.bot.send_message(
+                chat_id=agent.telegram_id,
+                text=f"❌ Ваша карточка ТО №{card.card_number} была отклонена.\n\nПричина: {reason}"
+            )
+        except Exception as e:
+            logger.error(f"Failed to notify agent {agent.telegram_id}: {e}")
+        
+        await update.message.reply_text(
+            f"❌ Карточка ТО №{card.card_number} отклонена",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("« К списку", callback_data="admin_approve")]])
+        )
+        return ConversationHandler.END
+
+def get_approval_handlers():
+    """Возвращает обработчики для раздела согласования"""
+    return [
+        CallbackQueryHandler(show_approval_list, pattern="^admin_approve$"),
+        CallbackQueryHandler(show_approval_list, pattern="^approval_page_"),
+        CallbackQueryHandler(show_card_details, pattern="^approve_card_"),
+        CallbackQueryHandler(confirm_card, pattern="^confirm_card_"),
+        CallbackQueryHandler(decline_card, pattern="^decline_card_"),
+        MessageHandler(filters.TEXT & ~filters.COMMAND, process_decline_reason, WAITING_DECLINE_REASON)
+    ] 

@@ -3,10 +3,11 @@ from telegram.ext import ContextTypes, ConversationHandler, CommandHandler, Mess
 from utils.logger import logger
 from utils.roles import admin_required
 from database.database import get_db
-from database.models import Agent, TOCard, Payment
+from database.models import Agent, TOCard, Payment, Calculation
 from handlers.user_handler import get_all_agents, update_agent_commission
 from sqlalchemy import func
 from datetime import datetime
+from sqlalchemy.orm import Session
 
 # Состояния для ConversationHandler
 (
@@ -15,10 +16,13 @@ from datetime import datetime
     AGENT_INFO, 
     AGENT_ARCHIVE, 
     AGENT_ACTION,
-    PAYMENT_AMOUNT, PAYMENT_COMMENT,
-    EDIT_CARD, EDIT_CARD_SELECT_FIELD,
-    CHANGE_COMMISSION
-) = range(10)
+    PAYMENT_AMOUNT, 
+    PAYMENT_COMMENT,
+    EDIT_CARD, 
+    EDIT_CARD_SELECT_FIELD,
+    CHANGE_COMMISSION,
+    WAITING_CALCULATION_AMOUNT
+) = range(11)
 
 @admin_required
 async def admin_agents_list(update: Update, context: ContextTypes.DEFAULT_TYPE, page: int = 0):
@@ -790,6 +794,87 @@ async def select_to_card_for_edit(update: Update, context: ContextTypes.DEFAULT_
     finally:
         db.close()
 
+@admin_required
+async def add_calculation_card(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Добавление карточки расчёта для агента"""
+    query = update.callback_query
+    await query.answer()
+    
+    agent_id = context.user_data.get('selected_agent_id')
+    if not agent_id:
+        await query.edit_message_text(
+            "❌ Агент не выбран",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("« Назад", callback_data="admin_menu")]])
+        )
+        return
+    
+    await query.edit_message_text(
+        "💰 Введите сумму для карточки расчёта (только число, например: 1000):",
+        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("« Отмена", callback_data="admin_agent_actions")]])
+    )
+    return WAITING_CALCULATION_AMOUNT
+
+@admin_required
+async def process_calculation_amount(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обработка введенной суммы для карточки расчёта"""
+    try:
+        amount = float(update.message.text)
+        if amount <= 0:
+            raise ValueError("Сумма должна быть положительной")
+    except ValueError:
+        await update.message.reply_text(
+            "❌ Пожалуйста, введите корректную сумму (положительное число)",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("« Отмена", callback_data="admin_agent_actions")]])
+        )
+        return WAITING_CALCULATION_AMOUNT
+    
+    agent_id = context.user_data.get('selected_agent_id')
+    with Session() as db:
+        agent = db.query(Agent).filter(Agent.id == agent_id).first()
+        if not agent:
+            await update.message.reply_text("❌ Агент не найден")
+            return ConversationHandler.END
+        
+        # Создаем новую карточку расчёта
+        calculation = Calculation(
+            agent_id=agent_id,
+            amount=amount,
+            created_at=datetime.now()
+        )
+        
+        # Обновляем баланс агента (может быть отрицательным)
+        agent.balance = (agent.balance or 0) - amount
+        
+        try:
+            db.add(calculation)
+            db.commit()
+            
+            # Уведомляем агента
+            try:
+                await context.bot.send_message(
+                    chat_id=agent.telegram_id,
+                    text=f"💰 Администратор добавил карточку расчёта на сумму {amount:.2f} руб.\n"
+                         f"Ваш новый баланс: {agent.balance:.2f} руб."
+                )
+            except Exception as e:
+                logger.error(f"Failed to notify agent {agent.telegram_id}: {e}")
+            
+            await update.message.reply_text(
+                f"✅ Карточка расчёта на сумму {amount:.2f} руб. добавлена для агента {agent.full_name}\n"
+                f"Новый баланс агента: {agent.balance:.2f} руб.",
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("« К действиям", callback_data="admin_agent_actions")]])
+            )
+            return ConversationHandler.END
+            
+        except Exception as e:
+            db.rollback()
+            logger.error(f"Error adding calculation card: {e}")
+            await update.message.reply_text(
+                "❌ Произошла ошибка при добавлении карточки расчёта",
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("« К действиям", callback_data="admin_agent_actions")]])
+            )
+            return ConversationHandler.END
+
 def get_status_text(status):
     """Преобразование статуса в читаемый текст"""
     status_texts = {
@@ -798,4 +883,211 @@ def get_status_text(status):
         "rejected": "❌ Отклонено",
         "cancelled": "🚫 Отменено"
     }
-    return status_texts.get(status, status) 
+    return status_texts.get(status, status)
+
+async def edit_to_card(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Показывает список карточек ТО для редактирования"""
+    query = update.callback_query
+    await query.answer()
+    
+    agent_id = context.user_data.get('selected_agent_id')
+    if not agent_id:
+        await query.edit_message_text(
+            "❌ Агент не выбран",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("« Назад", callback_data="admin_menu")]])
+        )
+        return
+    
+    page = context.user_data.get('to_cards_page', 1)
+    per_page = 5
+    
+    with Session() as db:
+        agent = db.query(Agent).filter(Agent.id == agent_id).first()
+        cards = db.query(TOCard).filter(TOCard.agent_id == agent_id).order_by(TOCard.created_at.desc()).all()
+        
+        if not cards:
+            await query.edit_message_text(
+                "📭 У агента нет карточек ТО",
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("« Назад", callback_data="admin_agent_actions")]])
+            )
+            return
+        
+        total_pages = (len(cards) + per_page - 1) // per_page
+        start_idx = (page - 1) * per_page
+        end_idx = start_idx + per_page
+        current_cards = cards[start_idx:end_idx]
+        
+        keyboard = []
+        for card in current_cards:
+            status_text = get_status_text(card.status)
+            card_text = f"ТО №{card.card_number} | {status_text}"
+            keyboard.append([InlineKeyboardButton(card_text, callback_data=f"edit_card_{card.id}")])
+        
+        nav_buttons = []
+        if page > 1:
+            nav_buttons.append(InlineKeyboardButton("« Пред.", callback_data=f"to_cards_page_{page-1}"))
+        if page < total_pages:
+            nav_buttons.append(InlineKeyboardButton("След. »", callback_data=f"to_cards_page_{page+1}"))
+        if nav_buttons:
+            keyboard.append(nav_buttons)
+            
+        keyboard.append([InlineKeyboardButton("« Назад", callback_data="admin_agent_actions")])
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        message = f"📋 Карточки ТО агента {agent.full_name} (стр. {page}/{total_pages}):"
+        await query.edit_message_text(text=message, reply_markup=reply_markup)
+
+async def show_card_edit_options(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Показывает опции редактирования карточки ТО"""
+    query = update.callback_query
+    await query.answer()
+    
+    card_id = int(query.data.split('_')[-1])
+    context.user_data['edit_card_id'] = card_id
+    
+    with Session() as db:
+        card = db.query(TOCard).filter(TOCard.id == card_id).first()
+        if not card:
+            await query.edit_message_text(
+                "❌ Карточка не найдена",
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("« Назад", callback_data="admin_agent_actions")]])
+            )
+            return
+        
+        message = (
+            f"📄 Карточка ТО №{card.card_number}\n\n"
+            f"🏢 СТО: {card.sto_name}\n"
+            f"🚗 Категория: {card.category}\n"
+            f"📅 Время: {card.appointment_time.strftime('%d.%m.%Y %H:%M')}\n"
+            f"💰 Стоимость: {card.total_price} руб.\n"
+            f"📝 Комментарий: {card.comment or 'нет'}\n\n"
+            "Выберите поле для редактирования:"
+        )
+        
+        keyboard = [
+            [InlineKeyboardButton("🏢 СТО", callback_data="edit_field_sto")],
+            [InlineKeyboardButton("🚗 Категория", callback_data="edit_field_category")],
+            [InlineKeyboardButton("📅 Время", callback_data="edit_field_time")],
+            [InlineKeyboardButton("💰 Стоимость", callback_data="edit_field_price")],
+            [InlineKeyboardButton("📝 Комментарий", callback_data="edit_field_comment")],
+            [InlineKeyboardButton("« Назад", callback_data="edit_to_card")]
+        ]
+        
+        await query.edit_message_text(text=message, reply_markup=InlineKeyboardMarkup(keyboard))
+        return EDIT_CARD_SELECT_FIELD
+
+async def process_card_edit(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обработка редактирования поля карточки ТО"""
+    field = update.callback_query.data.split('_')[-1]
+    card_id = context.user_data.get('edit_card_id')
+    
+    with Session() as db:
+        card = db.query(TOCard).filter(TOCard.id == card_id).first()
+        if not card:
+            await update.callback_query.edit_message_text(
+                "❌ Карточка не найдена",
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("« Назад", callback_data="admin_agent_actions")]])
+            )
+            return ConversationHandler.END
+        
+        field_prompts = {
+            'sto': "🏢 Введите название СТО:",
+            'category': "🚗 Введите категорию ТС (B, C или E):",
+            'time': "📅 Введите дату и время в формате ДД.ММ.ГГГГ ЧЧ:ММ:",
+            'price': "💰 Введите новую стоимость (только число):",
+            'comment': "📝 Введите новый комментарий:"
+        }
+        
+        await update.callback_query.edit_message_text(
+            field_prompts[field],
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("« Отмена", callback_data="edit_to_card")]])
+        )
+        context.user_data['edit_field'] = field
+        return EDIT_CARD
+
+async def save_card_edit(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Сохранение изменений в карточке ТО"""
+    field = context.user_data.get('edit_field')
+    card_id = context.user_data.get('edit_card_id')
+    new_value = update.message.text
+    
+    with Session() as db:
+        card = db.query(TOCard).filter(TOCard.id == card_id).first()
+        agent = db.query(Agent).filter(Agent.id == card.agent_id).first()
+        
+        if not card:
+            await update.message.reply_text("❌ Карточка не найдена")
+            return ConversationHandler.END
+        
+        try:
+            if field == 'sto':
+                card.sto_name = new_value
+            elif field == 'category':
+                if new_value not in ['B', 'C', 'E']:
+                    raise ValueError("Неверная категория")
+                card.category = new_value
+            elif field == 'time':
+                try:
+                    new_time = datetime.strptime(new_value, '%d.%m.%Y %H:%M')
+                    card.appointment_time = new_time
+                except ValueError:
+                    raise ValueError("Неверный формат даты и времени")
+            elif field == 'price':
+                try:
+                    new_price = float(new_value)
+                    if new_price <= 0:
+                        raise ValueError()
+                    card.total_price = new_price
+                except ValueError:
+                    raise ValueError("Неверная сумма")
+            elif field == 'comment':
+                card.comment = new_value
+            
+            db.commit()
+            
+            # Уведомляем агента
+            try:
+                await context.bot.send_message(
+                    chat_id=agent.telegram_id,
+                    text=f"✏️ Администратор изменил вашу карточку ТО №{card.card_number}"
+                )
+            except Exception as e:
+                logger.error(f"Failed to notify agent {agent.telegram_id}: {e}")
+            
+            await update.message.reply_text(
+                f"✅ Карточка ТО №{card.card_number} успешно изменена",
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("« К списку карточек", callback_data="edit_to_card")]])
+            )
+            return ConversationHandler.END
+            
+        except ValueError as e:
+            await update.message.reply_text(
+                f"❌ Ошибка: {str(e)}",
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("« К списку карточек", callback_data="edit_to_card")]])
+            )
+            return EDIT_CARD
+        except Exception as e:
+            db.rollback()
+            logger.error(f"Error editing TO card: {e}")
+            await update.message.reply_text(
+                "❌ Произошла ошибка при изменении карточки",
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("« К списку карточек", callback_data="edit_to_card")]])
+            )
+            return ConversationHandler.END
+
+def get_admin_handlers():
+    """Возвращает обработчики для админ-панели"""
+    return [
+        CallbackQueryHandler(show_admin_menu, pattern="^admin_menu$"),
+        CallbackQueryHandler(show_agent_list, pattern="^admin_agents$"),
+        CallbackQueryHandler(show_agent_list, pattern="^agent_page_"),
+        CallbackQueryHandler(show_agent_details, pattern="^agent_details_"),
+        CallbackQueryHandler(show_agent_actions, pattern="^agent_actions$"),
+        CallbackQueryHandler(add_calculation_card, pattern="^add_calculation$"),
+        CallbackQueryHandler(edit_to_card, pattern="^edit_to_card$"),
+        CallbackQueryHandler(edit_to_card, pattern="^to_cards_page_"),
+        CallbackQueryHandler(show_card_edit_options, pattern="^edit_card_"),
+        CallbackQueryHandler(process_card_edit, pattern="^edit_field_"),
+        MessageHandler(filters.TEXT & ~filters.COMMAND, process_calculation_amount, WAITING_CALCULATION_AMOUNT),
+        MessageHandler(filters.TEXT & ~filters.COMMAND, save_card_edit, EDIT_CARD)
+    ] 

@@ -3,6 +3,8 @@ from telegram.ext import ContextTypes, ConversationHandler, CommandHandler, Mess
 from utils.logger import logger
 from database.database import get_db
 from handlers.user_handler import create_agent, get_agent_by_telegram_id
+from database.models import Agent
+from sqlalchemy.orm import Session
 
 # Константы для состояний разговора
 FULL_NAME, PHONE, COMPANY, CODE_WORD = range(4)
@@ -126,6 +128,48 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Очищаем данные пользователя
     context.user_data.clear()
     return ConversationHandler.END
+
+async def process_registration(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обработка регистрации агента"""
+    user_id = update.effective_user.id
+    user_data = context.user_data
+    
+    with Session() as db:
+        # Проверяем, не зарегистрирован ли уже пользователь
+        existing_agent = db.query(Agent).filter(Agent.telegram_id == user_id).first()
+        if existing_agent:
+            await update.message.reply_text("❌ Вы уже зарегистрированы в системе.")
+            return ConversationHandler.END
+        
+        # Создаем нового агента
+        new_agent = Agent(
+            telegram_id=user_id,
+            full_name=user_data.get('full_name'),
+            company_name=user_data.get('company'),
+            phone=user_data.get('phone'),
+            messenger_link=user_data.get('messenger_link'),
+            commission_rate=20.0  # Устанавливаем комиссию 20% по умолчанию
+        )
+        
+        try:
+            db.add(new_agent)
+            db.commit()
+            
+            await update.message.reply_text(
+                "✅ Регистрация успешно завершена!\n\n"
+                "Теперь вы можете использовать бот для создания карточек ТО.\n"
+                "Ваша комиссия по умолчанию установлена на 20%.\n\n"
+                "Используйте /start для начала работы."
+            )
+            return ConversationHandler.END
+            
+        except Exception as e:
+            db.rollback()
+            logger.error(f"Registration error for user {user_id}: {e}")
+            await update.message.reply_text(
+                "❌ Произошла ошибка при регистрации. Пожалуйста, попробуйте позже или обратитесь к администратору."
+            )
+            return ConversationHandler.END
 
 def get_registration_handler():
     """Создание обработчика разговора для регистрации"""
